@@ -1,51 +1,104 @@
-use std::fs;
-use std::io::prelude::*;
-use std::net::TcpListener;
-use std::net::TcpStream;
-use std::thread;
-use std::time::Duration;
+package main
 
-use hello::ThreadPool;
+import (
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "sync"
+    "golang.org/x/crypto/nacl/secretbox"
+    "golang.org/x/crypto/nacl/box"
+    "time"
+)
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
-    let pool = ThreadPool::new(4);
-
-    for stream in listener.incoming().take(2) {
-        let stream = stream.unwrap();
-        // handle_connection(stream);
-        pool.execute(|| {
-            handle_connection(stream);
-        });
-    }
-    println!("Shutting down.");
+type Server struct {
+    listener net.Listener
+    pool     *sync.Pool
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let mut buffer = [0; 1024]; // declare a buffer on the stack to hold the data that is read in
-    stream.read(&mut buffer).unwrap();
-    // println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
-    // let response = "HTTP/1.1 200 OK\r\n\r\n";
+func NewServer(address string) *Server {
+    listener, err := net.Listen("tcp", address)
+    if err != nil {
+        log.Fatalf("Failed to start server: %v", err)
+    }
+    return &Server{
+        listener: listener,
+        pool:     &sync.Pool{},
+    }
+}
 
-    let get = b"GET / HTTP/1.1\r\n"; // byte string
-    let sleep = b"GET /sleep HTTP/1.1\r\n";
+func (s *Server) Start() {
+    defer s.listener.Close()
+    log.Println("Server started on", s.listener.Addr())
+    for {
+        conn, err := s.listener.Accept()
+        if err != nil {
+            log.Printf("Failed to accept connection: %v", err)
+            continue
+        }
+        go s.handleConnection(conn)
+    }
+}
 
-    let (status_line, filename) = if buffer.starts_with(get) {
-        ("HTTP/1.1 200 OK", "hello.html")
-    } else if buffer.starts_with(sleep) {
-        // simulate a slow request
-        thread::sleep(Duration::from_secs(5));
-        ("HTTP/1.1 200 OK", "hello.html")
-    } else {
-        ("HTTP/1.1 404 NOT FOUND", "404.html")
-    };
-    let contents = fs::read_to_string(filename).unwrap();
-    let response = format!(
-        "{}\r\nContent-Length: {}\r\n\r\n{}",
-        status_line,
-        contents.len(),
-        contents
-    );
-    stream.write(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
+func (s *Server) handleConnection(conn net.Conn) {
+    defer conn.Close()
+    var buf [512]byte
+    n, err := conn.Read(buf[:])
+    if err != nil {
+        log.Printf("Failed to read from connection: %v", err)
+        return
+    }
+    request := string(buf[:n])
+    s.routeRequest(request, conn)
+}
+
+func (s *Server) routeRequest(request string, conn net.Conn) {
+    switch {
+    case request == "GET /strategy-status":
+        s.getStrategyStatus(conn)
+    case request == "POST /subscribe":
+        s.subscribe(conn)
+    case request == "POST /new-order":
+        s.newOrder(conn)
+    case request == "POST /modify-order":
+        s.modifyOrder(conn)
+    case request == "POST /register-stock-packet":
+        s.registerStockPacket(conn)
+    default:
+        http.Error(conn, "Not Found", http.StatusNotFound)
+    }
+}
+
+func (s *Server) getStrategyStatus(conn net.Conn) {
+    status := map[string]string{"status": "active"}
+    response, err := json.Marshal(status)
+    if err != nil {
+        log.Printf("Failed to marshal JSON: %v", err)
+        http.Error(conn, "Internal Server Error", http.StatusInternalServerError)
+        return
+    }
+    conn.Write(response)
+}
+
+func (s *Server) subscribe(conn net.Conn) {
+    conn.Write([]byte("Subscribed"))
+}
+
+func (s *Server) newOrder(conn net.Conn) {
+    conn.Write([]byte("New order received"))
+}
+
+func (s *Server) modifyOrder(conn net.Conn) {
+    conn.Write([]byte("Order modified"))
+}
+
+func (s *Server) registerStockPacket(conn net.Conn) {
+    conn.Write([]byte("Stock packet registered"))
+}
+
+func main() {
+    server := NewServer(":8080")
+    log.Println("Server started on :8080")
+    server.Start()
 }
