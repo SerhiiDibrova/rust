@@ -1,51 +1,63 @@
-use std::fs;
-use std::io::prelude::*;
-use std::net::TcpListener;
-use std::net::TcpStream;
-use std::thread;
-use std::time::Duration;
+package main
 
-use hello::ThreadPool;
+use hyper::{Body, Request, Response, Server};
+use hyper::service::{make_service_fn, service_fn};
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+use tokio::runtime::Runtime;
+use strategy::Strategy;
+use log::{info, LevelFilter};
+use simplelog::{Config, SimpleLogger};
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
-    let pool = ThreadPool::new(4);
-
-    for stream in listener.incoming().take(2) {
-        let stream = stream.unwrap();
-        // handle_connection(stream);
-        pool.execute(|| {
-            handle_connection(stream);
-        });
-    }
-    println!("Shutting down.");
+struct AppState {
+    logger: Arc<Mutex<Logger>>,
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let mut buffer = [0; 1024]; // declare a buffer on the stack to hold the data that is read in
-    stream.read(&mut buffer).unwrap();
-    // println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
-    // let response = "HTTP/1.1 200 OK\r\n\r\n";
+async fn handle_activation_status(_req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, hyper::Error> {
+    let strategy = Strategy::new();
+    let activated_status = strategy.activated();
+    let response = json!({ "activated": activated_status });
+    Ok(Response::new(Body::from(response.to_string())))
+}
 
-    let get = b"GET / HTTP/1.1\r\n"; // byte string
-    let sleep = b"GET /sleep HTTP/1.1\r\n";
+async fn handle_order_response(_req: Request<Body>, _state: Arc<AppState>) -> Result<Response<Body>, hyper::Error> {
+    Ok(Response::new(Body::from("Order response")))
+}
 
-    let (status_line, filename) = if buffer.starts_with(get) {
-        ("HTTP/1.1 200 OK", "hello.html")
-    } else if buffer.starts_with(sleep) {
-        // simulate a slow request
-        thread::sleep(Duration::from_secs(5));
-        ("HTTP/1.1 200 OK", "hello.html")
-    } else {
-        ("HTTP/1.1 404 NOT FOUND", "404.html")
-    };
-    let contents = fs::read_to_string(filename).unwrap();
-    let response = format!(
-        "{}\r\nContent-Length: {}\r\n\r\n{}",
-        status_line,
-        contents.len(),
-        contents
-    );
-    stream.write(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
+async fn handle_connection_events(_req: Request<Body>, _state: Arc<AppState>) -> Result<Response<Body>, hyper::Error> {
+    Adaptor::OnConnection();
+    Ok(Response::new(Body::from("Connection events")))
+}
+
+async fn handle_update_arthur(_req: Request<Body>, _state: Arc<AppState>) -> Result<Response<Body>, hyper::Error> {
+    Ok(Response::new(Body::from("Update Arthur")))
+}
+
+fn main() {
+    SimpleLogger::init(LevelFilter::Info, Config::default()).unwrap();
+    let logger = Arc::new(Mutex::new(Logger::new()));
+    let state = Arc::new(AppState { logger });
+
+    let make_svc = make_service_fn(|_| {
+        let state = state.clone();
+        async { Ok::<_, hyper::Error>(service_fn(move |req| {
+            let state = state.clone();
+            async move {
+                match req.uri().path() {
+                    "/strategy/activated" => handle_activation_status(req, state).await,
+                    "/api/order-response" => handle_order_response(req, state).await,
+                    "/connection/events" => handle_connection_events(req, state).await,
+                    "/update_arthur" => handle_update_arthur(req, state).await,
+                    _ => Ok(Response::new(Body::from("Not Found"))),
+                }
+            }
+        })) 
+    });
+
+    let addr = ([127, 0, 0, 1], 3000).into();
+    let server = Server::bind(&addr).serve(make_svc);
+
+    println!("Listening on http://{}", addr);
+    let rt = Runtime::new().unwrap();
+    rt.block_on(server).unwrap();
 }
