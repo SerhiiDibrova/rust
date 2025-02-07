@@ -1,91 +1,41 @@
-use std::sync::mpsc;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::thread;
+use std::collections::HashMap;
 
-pub struct ThreadPool {
-    workers: Vec<Worker>,
-    sender: mpsc::Sender<Message>,
+pub struct KeyValueStore {
+    store: HashMap<String, String>,
 }
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
-
-impl ThreadPool {
-    /// Create a new ThreadPool.
-    ///
-    /// The size is the number of threads in the pool.
-    ///
-    /// # Panics
-    ///
-    /// The `new` function will panic if the size is zero.
-    // cargo doc --open
-    pub fn new(size: usize) -> ThreadPool {
-        assert!(size > 0);
-        let (sender, receiver) = mpsc::channel();
-        let receiver = Arc::new(Mutex::new(receiver));
-        let mut workers = Vec::with_capacity(size);
-        for id in 0..size {
-            // the workers can share ownership of the receiving end
-            workers.push(Worker::new(id, Arc::clone(&receiver)));
-        }
-        ThreadPool { workers, sender }
-    }
-
-    pub fn execute<F>(&self, f: F)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let job = Box::new(f);
-        self.sender.send(Message::NewJob(job)).unwrap();
-    }
-}
-
-struct Worker {
-    id: usize,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
-        let thread = thread::spawn(move || loop {
-            let message = receiver.lock().unwrap().recv().unwrap();
-            match message {
-                Message::NewJob(job) => {
-                    println!("Worker {} got a job; executing.", id);
-                    job();
-                }
-                Message::Terminate => {
-                    println!("Worker {} was told to terminate.", id);
-                    break;
-                }
-            }
-        });
-        Worker {
-            id,
-            thread: Some(thread),
+impl KeyValueStore {
+    pub fn new() -> Self {
+        KeyValueStore {
+            store: HashMap::new(),
         }
     }
-}
 
-impl Drop for ThreadPool {
-    fn drop(&mut self) {
-        println!("Sending terminate message to all workers.");
-
-        for _ in &self.workers {
-            self.sender.send(Message::Terminate).unwrap();
-        }
-
-        for worker in &mut self.workers {
-            println!("Shutting down worker {}", worker.id);
-            if let Some(thread) = worker.thread.take() {
-                // takes the Some variant out and leaves None in its place.
-                thread.join().unwrap();
-            }
-        }
+    pub fn set(&mut self, key: String, value: String) {
+        self.store.insert(key, value);
     }
-}
 
-enum Message {
-    NewJob(Job),
-    Terminate,
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.store.get(key)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<String> {
+        self.store.remove(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.store.contains_key(key)
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.store.keys().cloned().collect()
+    }
+
+    pub fn values(&self) -> Vec<String> {
+        self.store.values().cloned().collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.store.clear();
+    }
 }
